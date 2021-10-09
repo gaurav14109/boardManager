@@ -16,7 +16,6 @@ module.exports.createNewBoard = async (req, res) => {
             name: name,
             user: user._id
         }
-
         await new Board(board).save();
 
         res.send('Board created successfully!');
@@ -47,13 +46,13 @@ module.exports.deleteBoard = async (req, res) => {
     try {
         const boardId = req.params.boardId
         const board = await Board.findById(boardId)
-       
-        if (!board) {   
+
+        if (!board) {
             return res.send('No Such Board exists! ')
         }
 
         board.remove()
-        await Todo.deleteMany({board:boardId});
+        await Todo.deleteMany({board: boardId});
 
         res.send('Deleted Successfully')
     } catch (err) {

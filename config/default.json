@@ -1,3 +1,4 @@
 {
-    "jwtsecret":"boardManagement"
+    "jwtsecret":"boardManagement",
+    "otpSecret": "Afsxge@adew@@"
 }

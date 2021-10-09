@@ -5,7 +5,14 @@ const jwt = require('jsonwebtoken');
 const config = require('config')
 const fs = require('fs');
 const path = require('path');
+const Otp = require('../models/otp')
+const {transporter} = require('../config/nodemailer')
+const {otpGenerator} = require('../config/otpGenerator')
+const client = require('../config/sms')
 
+function AddMinutesToDate(date, minutes) {
+    return new Date(date.getTime() + minutes * 60000);
+}
 module.exports.signUp = async (req, res) => {
     const errors = validationResult(req)
     if (!errors.isEmpty()) {
@@ -13,14 +20,14 @@ module.exports.signUp = async (req, res) => {
             .status(400)
             .json({errors: errors.array()});
     }
+    const whitelist = ['name', 'email', 'password', 'phone']
     try {
-        const user = await User.findOne({email: req.body.email})
-
-        if (user) {
+        const checkUserByEmail = await User.findOne({email: req.body[whitelist[1]]})
+        const checkUserByPhone = await User.findOne({phone: req.body[whitelist[3]]})
+        if (checkUserByEmail || checkUserByPhone) {
             return res.send('User Already Registered')
         }
 
-        const whitelist = ['name', 'email', 'password', 'phone']
         const userDetails = {}
 
         for (property in req.body) {
@@ -125,7 +132,6 @@ module.exports.updateUserDetails = async (req, res) => {
 
                         fs.unlinkSync(path.join(__dirname, '..', user.avatar));
                         user.avatar = User.avatarPath + '/' + req.file.filename;
-                        console.log(user.avatar)
                     }
 
                 }
@@ -169,4 +175,162 @@ module.exports.updatePassword = async (req, res) => {
     }
 }
 
-// Todo-task login through otp using phone
+// email otp generator
+module.exports.emailOtpGenerator = async (req, res) => {
+    //at email otp only email will be received
+    const {email} = req.body
+
+    if (!email) {
+
+        return res.send('Email not Provided!')
+    }
+
+    try {
+        const user = await User.findOne({email: email})
+        if (!user) {
+            return res.send('No Such User!')
+        }
+        const otp = otpGenerator()
+
+        const expiration_time = AddMinutesToDate(new Date(), 10)
+        const otp_instance = await new Otp({otp: otp, expiration: expiration_time})
+
+        //send email and otp id in jwt as json object
+        const details = {
+            otp_id: otp_instance._id,
+            email: email
+        }
+        await otp_instance.save()
+
+        const encoded_token = jwt.sign(details, config.otpSecret)
+        const mailOptions = {
+            from: 'gauravgusain48@gmail.com',
+            to: 'gusaing1410@gmail.com',
+            subject: 'Otp for Login',
+            text: `Your Otp is ${otp}`
+        };
+
+        await transporter.sendMail(mailOptions)
+        res.json({otp_token: encoded_token})
+
+    } catch (err) {
+        console.log(err)
+    }
+}
+
+//phone otp generator
+module.exports.phoneOtpGenerator = async (req, res) => {
+
+    const {phone} = req.body
+
+    if (!phone) {
+
+        return res.send('phone number not Provided!')
+    }
+
+    try {
+        const user = await User.findOne({phone: phone})
+        if (!user) {
+            return res.send('No Such User!')
+        }
+        const otp = otpGenerator()
+
+        const expiration_time = AddMinutesToDate(new Date(), 10)
+        const otp_instance = await new Otp({otp: otp, expiration: expiration_time})
+
+        //send email and otp id in jwt as json object
+        const details = {
+            otp_id: otp_instance._id,
+            phone: phone
+        }
+        await otp_instance.save()
+
+        const encoded_token = jwt.sign(details, config.otpSecret)
+        client
+            .messages
+            .create({
+                from: '+14842638823',
+                body: otp,
+                to: '+91' + phone
+            })
+            .then(
+                message => res.json({otp_token: encoded_token, msg: 'Otp sent successfully'})
+            )
+            .catch(err => console.log(err))
+
+        } catch (err) {
+        console.log(err)
+    }
+}
+
+module.exports.verifyOtp = async (req, res) => {
+    //phone or email
+    const {email, otp_token, otp, phone} = req.body
+    var user = ""
+
+    if (!email && !phone) {
+        return res.send('Email or Phone not present')
+    }
+    if (!otp_token) {
+        return res.send('Token not present')
+    }
+    const decoded_token = jwt.verify(otp_token, config.otpSecret)
+
+    const decode_token = {
+        otp_id: decoded_token.otp_id,
+        phoneemail: decoded_token.email
+            ? decoded_token.email
+            : decoded_token.phone
+    }
+    //comparing otp id and otp number
+    try {
+        if (email) {
+            if (decode_token.phoneemail !== email) {
+                return res.send('Email does not match')
+                //also check user in Database
+            }
+            user = await User.findOne({email: email})
+
+        } else if (phone) {
+
+            if (decode_token.phoneemail !== phone) {
+                return res.send('Phone does not match')
+                //also check user in Database
+            }
+            user = await User.findOne({phone: phone})
+        }
+
+        const otp_instance = await Otp.findById(decode_token.otp_id)
+
+        if (!otp_instance) {
+            return res.send('Invalid Otp token given! Plz provide valid token!')
+        }
+        if (otp_instance.otp !== parseInt(otp) || otp_instance.verified) {
+
+            return res.send('Wrong Otp or Otp have already been verified')
+        }
+        //check expiration
+
+        if (!(otp_instance.expiration.getTime() > new Date().getTime())) {
+
+            return res.send('Otp has expired')
+
+        }
+        otp_instance.verified = true
+
+        await otp_instance.save()
+
+        const userData = {
+            email: user.email,
+            id: user._id
+        }
+        const token = jwt.sign(userData, config.jwtsecret)
+        res
+            .status(200)
+            .json({token: token, msg: 'User Logged in Successfully with Otp'})
+
+    } catch (err) {
+        console.log(err)
+    }
+
+}
